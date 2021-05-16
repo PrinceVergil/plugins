@@ -1,4 +1,4 @@
-// Copyright 2013 The Flutter Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -46,9 +46,7 @@ int64_t FLTCMTimeToMillis(CMTime time) {
 @property(nonatomic, readonly) bool isPlaying;
 @property(nonatomic) bool isLooping;
 @property(nonatomic, readonly) bool isInitialized;
-- (instancetype)initWithURL:(NSURL*)url
-               frameUpdater:(FLTFrameUpdater*)frameUpdater
-                httpHeaders:(NSDictionary<NSString*, NSString*>*)headers;
+- (instancetype)initWithURL:(NSURL*)url frameUpdater:(FLTFrameUpdater*)frameUpdater;
 - (void)play;
 - (void)pause;
 - (void)setIsLooping:(bool)isLooping;
@@ -64,7 +62,7 @@ static void* playbackBufferFullContext = &playbackBufferFullContext;
 @implementation FLTVideoPlayer
 - (instancetype)initWithAsset:(NSString*)asset frameUpdater:(FLTFrameUpdater*)frameUpdater {
   NSString* path = [[NSBundle mainBundle] pathForResource:asset ofType:nil];
-  return [self initWithURL:[NSURL fileURLWithPath:path] frameUpdater:frameUpdater httpHeaders:nil];
+  return [self initWithURL:[NSURL fileURLWithPath:path] frameUpdater:frameUpdater];
 }
 
 - (void)addObservers:(AVPlayerItem*)item {
@@ -164,15 +162,8 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _displayLink.paused = YES;
 }
 
-- (instancetype)initWithURL:(NSURL*)url
-               frameUpdater:(FLTFrameUpdater*)frameUpdater
-                httpHeaders:(NSDictionary<NSString*, NSString*>*)headers {
-  NSDictionary<NSString*, id>* options = nil;
-  if (headers != nil && [headers count] != 0) {
-    options = @{@"AVURLAssetHTTPHeaderFieldsKey" : headers};
-  }
-  AVURLAsset* urlAsset = [AVURLAsset URLAssetWithURL:url options:options];
-  AVPlayerItem* item = [AVPlayerItem playerItemWithAsset:urlAsset];
+- (instancetype)initWithURL:(NSURL*)url frameUpdater:(FLTFrameUpdater*)frameUpdater {
+  AVPlayerItem* item = [AVPlayerItem playerItemWithURL:url];
   return [self initWithPlayerItem:item frameUpdater:frameUpdater];
 }
 
@@ -368,30 +359,6 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _player.volume = (float)((volume < 0.0) ? 0.0 : ((volume > 1.0) ? 1.0 : volume));
 }
 
-- (void)setPlaybackSpeed:(double)speed {
-  // See https://developer.apple.com/library/archive/qa/qa1772/_index.html for an explanation of
-  // these checks.
-  if (speed > 2.0 && !_player.currentItem.canPlayFastForward) {
-    if (_eventSink != nil) {
-      _eventSink([FlutterError errorWithCode:@"VideoError"
-                                     message:@"Video cannot be fast-forwarded beyond 2.0x"
-                                     details:nil]);
-    }
-    return;
-  }
-
-  if (speed < 1.0 && !_player.currentItem.canPlaySlowForward) {
-    if (_eventSink != nil) {
-      _eventSink([FlutterError errorWithCode:@"VideoError"
-                                     message:@"Video cannot be slow-forwarded"
-                                     details:nil]);
-    }
-    return;
-  }
-
-  _player.rate = speed;
-}
-
 - (CVPixelBufferRef)copyPixelBuffer {
   CMTime outputItemTime = [_videoOutput itemTimeForHostTime:CACurrentMediaTime()];
   if ([_videoOutput hasNewPixelBufferForItemTime:outputItemTime]) {
@@ -401,7 +368,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   }
 }
 
-- (void)onTextureUnregistered:(NSObject<FlutterTexture>*)texture {
+- (void)onTextureUnregistered {
   dispatch_async(dispatch_get_main_queue(), ^{
     [self dispose];
   });
@@ -531,8 +498,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     return [self onPlayerSetup:player frameUpdater:frameUpdater];
   } else if (input.uri) {
     player = [[FLTVideoPlayer alloc] initWithURL:[NSURL URLWithString:input.uri]
-                                    frameUpdater:frameUpdater
-                                     httpHeaders:input.httpHeaders];
+                                    frameUpdater:frameUpdater];
     return [self onPlayerSetup:player frameUpdater:frameUpdater];
   } else {
     *error = [FlutterError errorWithCode:@"video_player" message:@"not implemented" details:nil];
@@ -572,11 +538,6 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   [player setVolume:[input.volume doubleValue]];
 }
 
-- (void)setPlaybackSpeed:(FLTPlaybackSpeedMessage*)input error:(FlutterError**)error {
-  FLTVideoPlayer* player = _players[input.textureId];
-  [player setPlaybackSpeed:[input.speed doubleValue]];
-}
-
 - (void)play:(FLTTextureMessage*)input error:(FlutterError**)error {
   FLTVideoPlayer* player = _players[input.textureId];
   [player play];
@@ -597,6 +558,67 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
 - (void)pause:(FLTTextureMessage*)input error:(FlutterError**)error {
   FLTVideoPlayer* player = _players[input.textureId];
   [player pause];
+}
+- (FLTAudioMessage*)getAudios:(FLTTextureMessage*)input error:(FlutterError**)error{
+    
+  FLTAudioMessage* result = [[FLTAudioMessage alloc] init];
+  FLTVideoPlayer* player = _players[input.textureId];
+    AVMediaSelectionGroup *audioSelectionGroup = [[[player.player currentItem] asset] mediaSelectionGroupForMediaCharacteristic: AVMediaCharacteristicAudible];
+
+    NSArray* x = audioSelectionGroup.options;
+    NSMutableArray* audios;
+    audios = [NSMutableArray array];
+
+    for(AVMediaSelectionOption* object in x)
+    {
+
+        [audios addObject: object.displayName];
+        //result.audioTypes =[NSString stringWithFormat: @"%@%@%@", result.audioTypes, object.extendedLanguageTag,@"\n"];
+    }
+    NSArray *array = [audios copy];
+    result.audios = array;
+
+
+  return result;
+
+}
+- (void)setAudioByIndex:(nonnull FLTAudioMessage *)input error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+    FLTVideoPlayer* player = _players[input.textureId];
+    int index = [input.index intValue];
+    int i =0;
+
+    AVMediaSelectionGroup *audioSelectionGroup = [[[player.player currentItem] asset] mediaSelectionGroupForMediaCharacteristic: AVMediaCharacteristicAudible];
+    NSArray* x = audioSelectionGroup.options;
+
+    for(AVMediaSelectionOption* object in x)
+    {
+
+        if(index == i)
+        {
+            [[player.player currentItem] selectMediaOption:object inMediaSelectionGroup: audioSelectionGroup];
+            break;
+
+            }
+        i+=1;
+    }
+}
+- (void)setAudio:(nonnull FLTAudioMessage *)input error:(FlutterError * _Nullable __autoreleasing * _Nonnull)error {
+    FLTVideoPlayer* player = _players[input.textureId];
+    NSString* audioType = input.audios.firstObject;
+    AVMediaSelectionGroup *audioSelectionGroup = [[[player.player currentItem] asset] mediaSelectionGroupForMediaCharacteristic: AVMediaCharacteristicAudible];
+    NSArray* x = audioSelectionGroup.options;
+    for(AVMediaSelectionOption* object in x)
+    {
+        
+        if([object.displayName isEqualToString:audioType] ==1)
+            [[player.player currentItem] selectMediaOption:object inMediaSelectionGroup: audioSelectionGroup];
+            
+
+
+        
+        
+        
+    }
 }
 
 - (void)setMixWithOthers:(FLTMixWithOthersMessage*)input

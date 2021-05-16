@@ -1,15 +1,13 @@
-// Copyright 2013 The Flutter Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
-
 import 'dart:async';
 import 'dart:html';
-import 'src/shims/dart_ui.dart' as ui;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_web_plugins/flutter_web_plugins.dart';
 import 'package:video_player_platform_interface/video_player_platform_interface.dart';
+import 'hls.dart';
+import 'package:js/js.dart';
 
 // An error code value to error name Map.
 // See: https://developer.mozilla.org/en-US/docs/Web/API/MediaError/code
@@ -54,7 +52,7 @@ class VideoPlayerPlugin extends VideoPlayerPlatform {
 
   @override
   Future<void> dispose(int textureId) async {
-    _videoPlayers[textureId]!.dispose();
+    _videoPlayers[textureId].dispose();
     _videoPlayers.remove(textureId);
     return null;
   }
@@ -70,18 +68,20 @@ class VideoPlayerPlugin extends VideoPlayerPlatform {
     final int textureId = _textureCounter;
     _textureCounter++;
 
-    late String uri;
+    String uri;
     switch (dataSource.sourceType) {
       case DataSourceType.network:
         // Do NOT modify the incoming uri, it can be a Blob, and Safari doesn't
         // like blobs that have changed.
-        uri = dataSource.uri ?? '';
+        uri = dataSource.uri;
         break;
       case DataSourceType.asset:
-        String assetUrl = dataSource.asset!;
-        if (dataSource.package != null && dataSource.package!.isNotEmpty) {
+        String assetUrl = dataSource.asset;
+        if (dataSource.package != null && dataSource.package.isNotEmpty) {
           assetUrl = 'packages/${dataSource.package}/$assetUrl';
         }
+        // 'webOnlyAssetManager' is only in the web version of dart:ui
+        // ignore: undefined_prefixed_name
         assetUrl = ui.webOnlyAssetManager.getAssetUrl(assetUrl);
         uri = assetUrl;
         break;
@@ -103,78 +103,76 @@ class VideoPlayerPlugin extends VideoPlayerPlatform {
 
   @override
   Future<void> setLooping(int textureId, bool looping) async {
-    return _videoPlayers[textureId]!.setLooping(looping);
+    return _videoPlayers[textureId].setLooping(looping);
   }
 
   @override
   Future<void> play(int textureId) async {
-    return _videoPlayers[textureId]!.play();
+    return _videoPlayers[textureId].play();
   }
 
   @override
   Future<void> pause(int textureId) async {
-    return _videoPlayers[textureId]!.pause();
+    return _videoPlayers[textureId].pause();
   }
 
   @override
   Future<void> setVolume(int textureId, double volume) async {
-    return _videoPlayers[textureId]!.setVolume(volume);
-  }
-
-  @override
-  Future<void> setPlaybackSpeed(int textureId, double speed) async {
-    assert(speed > 0);
-
-    return _videoPlayers[textureId]!.setPlaybackSpeed(speed);
+    return _videoPlayers[textureId].setVolume(volume);
   }
 
   @override
   Future<void> seekTo(int textureId, Duration position) async {
-    return _videoPlayers[textureId]!.seekTo(position);
+    return _videoPlayers[textureId].seekTo(position);
   }
 
   @override
   Future<Duration> getPosition(int textureId) async {
-    _videoPlayers[textureId]!.sendBufferingUpdate();
-    return _videoPlayers[textureId]!.getPosition();
+    _videoPlayers[textureId].sendBufferingUpdate();
+    return _videoPlayers[textureId].getPosition();
+  }
+
+  @override
+  Future<List> getAudios(int textureId) async {
+    return _videoPlayers[textureId].getAudioTracks();
+
+    //   return "Soja Marja";
+  }
+
+  @override
+  Future<void> setAudio(int textureId, List audio) {
+    _videoPlayers[textureId].setAudio(audio[0]);
+    return null;
+  }
+
+  @override
+  Future<void> setAudioByIndex(int textureId, int index) {
+    _videoPlayers[textureId].setAudioByIndex(index);
+    return null;
   }
 
   @override
   Stream<VideoEvent> videoEventsFor(int textureId) {
-    return _videoPlayers[textureId]!.eventController.stream;
+    return _videoPlayers[textureId].eventController.stream;
   }
 
   @override
   Widget buildView(int textureId) {
     return HtmlElementView(viewType: 'videoPlayer-$textureId');
   }
-
-  /// Sets the audio mode to mix with other sources (ignored)
-  @override
-  Future<void> setMixWithOthers(bool mixWithOthers) => Future<void>.value();
 }
 
 class _VideoPlayer {
-  _VideoPlayer({required this.uri, required this.textureId});
+  _VideoPlayer({this.uri, this.textureId});
 
   final StreamController<VideoEvent> eventController =
       StreamController<VideoEvent>();
 
   final String uri;
   final int textureId;
-  late VideoElement videoElement;
+  VideoElement videoElement;
   bool isInitialized = false;
-  bool isBuffering = false;
-
-  void setBuffering(bool buffering) {
-    if (isBuffering != buffering) {
-      isBuffering = buffering;
-      eventController.add(VideoEvent(
-          eventType: isBuffering
-              ? VideoEventType.bufferingStart
-              : VideoEventType.bufferingEnd));
-    }
-  }
+  Hls hls;
 
   void initialize() {
     videoElement = VideoElement()
@@ -187,46 +185,40 @@ class _VideoPlayer {
     videoElement.setAttribute('playsinline', 'true');
 
     // TODO(hterkelsen): Use initialization parameters once they are available
+    // ignore: undefined_prefixed_name
     ui.platformViewRegistry.registerViewFactory(
         'videoPlayer-$textureId', (int viewId) => videoElement);
+    hls = Hls();
+    if (uri.toString().contains("m3u8")) {
+      hls.attachMedia(videoElement);
 
+      hls.on('hlsMediaAttached', allowInterop((_, __) {
+        hls.loadSource(uri.toString());
+      }));
+    } else {
+      videoElement.src = uri.toString();
+    }
     videoElement.onCanPlay.listen((dynamic _) {
       if (!isInitialized) {
         isInitialized = true;
         sendInitialized();
       }
-      setBuffering(false);
-    });
-
-    videoElement.onCanPlayThrough.listen((dynamic _) {
-      setBuffering(false);
-    });
-
-    videoElement.onPlaying.listen((dynamic _) {
-      setBuffering(false);
-    });
-
-    videoElement.onWaiting.listen((dynamic _) {
-      setBuffering(true);
-      sendBufferingUpdate();
     });
 
     // The error event fires when some form of error occurs while attempting to load or perform the media.
     videoElement.onError.listen((Event _) {
-      setBuffering(false);
       // The Event itself (_) doesn't contain info about the actual error.
       // We need to look at the HTMLMediaElement.error.
       // See: https://developer.mozilla.org/en-US/docs/Web/API/HTMLMediaElement/error
-      MediaError error = videoElement.error!;
+      MediaError error = videoElement.error;
       eventController.addError(PlatformException(
-        code: _kErrorValueToErrorName[error.code]!,
+        code: _kErrorValueToErrorName[error.code],
         message: error.message != '' ? error.message : _kDefaultErrorMessage,
         details: _kErrorValueToErrorDescription[error.code],
       ));
     });
 
     videoElement.onEnded.listen((dynamic _) {
-      setBuffering(false);
       eventController.add(VideoEvent(eventType: VideoEventType.completed));
     });
   }
@@ -271,12 +263,6 @@ class _VideoPlayer {
     videoElement.volume = value;
   }
 
-  void setPlaybackSpeed(double speed) {
-    assert(speed > 0);
-
-    videoElement.playbackRate = speed;
-  }
-
   void seekTo(Duration position) {
     videoElement.currentTime = position.inMilliseconds.toDouble() / 1000;
   }
@@ -293,8 +279,8 @@ class _VideoPlayer {
           milliseconds: (videoElement.duration * 1000).round(),
         ),
         size: Size(
-          videoElement.videoWidth.toDouble(),
-          videoElement.videoHeight.toDouble(),
+          videoElement.videoWidth.toDouble() ?? 0.0,
+          videoElement.videoHeight.toDouble() ?? 0.0,
         ),
       ),
     );
@@ -314,5 +300,39 @@ class _VideoPlayer {
       ));
     }
     return durationRange;
+  }
+
+  void setAudio(String audioTrack) {
+    if (uri.toString().endsWith("m3u8")) {
+      String str = "";
+      for (int i = 0; i < hls.audioTracks.length; i++) {
+        if (hls.audioTracks[i].name == audioTrack) {
+          hls.audioTrack = i;
+
+          break;
+        }
+      }
+    }
+  }
+
+  List getAudioTracks() {
+    List audios = [];
+
+    if (uri.toString().contains("m3u8")) {
+      String str = "";
+      for (int i = 0; i < hls.audioTracks.length; i++) {
+        audios.add(hls.audioTracks[i].name);
+      }
+    }
+    return audios;
+  }
+
+  void setAudioByIndex(int index) {
+    if (uri.toString().endsWith("m3u8")) {
+      if(index<hls.audioTracks.length && index>=0) {
+        hls.audioTrack = index;
+      }
+
+    }
   }
 }
